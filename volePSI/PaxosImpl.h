@@ -2730,8 +2730,20 @@ namespace volePSI
 		std::promise<void> hashingDoneProm;
 		auto hashingDoneFu = hashingDoneProm.get_future().share();
 
+		// Each thread gets its own PRNG: the threads solve bins concurrently and a
+		// shared PRNG (buffer + counter) is not thread-safe; sharing it corrupted the
+		// buffer and crashed at large inputs with numThreads >= 4.
+		std::vector<PRNG> thrdPrngs;
+		if (prng)
+		{
+			thrdPrngs.reserve(numThreads);
+			for (u64 t = 0; t < numThreads; ++t)
+				thrdPrngs.emplace_back(prng->get<block>());
+		}
+
 		auto routine = [&](u64 thrdIdx)
 		{
+			PRNG* thrdPrng = prng ? &thrdPrngs[thrdIdx] : nullptr;
 			auto begin = (inputs_.size() * thrdIdx) / numThreads;
 			auto end = (inputs_.size() * (thrdIdx + 1)) / numThreads;
 			auto inputs = inputs_.subspan(begin, end - begin);
@@ -2926,7 +2938,7 @@ namespace volePSI
 				}
 
 				paxos.setInput(rows, hashes, cols, colBacking, colWeights);
-				paxos.encode(values, output, h, prng);
+				paxos.encode(values, output, h, thrdPrng);
 
 			}
 		};
