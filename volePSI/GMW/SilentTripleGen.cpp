@@ -48,7 +48,7 @@ namespace volePSI
 			for (u64 i = 0; i < mRecverOT.size(); i++)
 				mBase.mRecvChoiceBits.append(mRecverOT[i].sampleBaseChoiceBits(mPrng));
 			for (u64 i = 0; i < mSenderOT.size(); i++)
-				mBase.mNumSend += mSenderOT[i].silentBaseOtCount();
+				mBase.mNumSend += mSenderOT[i].baseCount().mBaseOtCount;
 		}
 		return mBase;
 	}
@@ -57,16 +57,26 @@ namespace volePSI
 	void SilentTripleGen::setBaseOts(span<block> recvOts, span<std::array<block, 2>> sendOts)
 	{
 
+		// libOTe d26929c: base OTs are set via setBaseCors(); with the default (Regular)
+		// noise distribution no base VOLEs are needed, so those spans are empty.
 		for (u64 i = 0; i < mSenderOT.size(); i++)
 		{
-			mSenderOT[i].setSilentBaseOts(sendOts.subspan(0, mSenderOT[i].silentBaseOtCount()));
-			sendOts = sendOts.subspan(mSenderOT[i].silentBaseOtCount());
+			auto n = mSenderOT[i].baseCount().mBaseOtCount;
+			mSenderOT[i].setBaseCors(sendOts.subspan(0, n), {}, mPrng.get<block>());
+			sendOts = sendOts.subspan(n);
 		}
 
+		// the receiver must be handed back the same choice bits it sampled in requiredBaseOts().
+		auto choices = mBase.mRecvChoiceBits;
+		u64 choiceOffset = 0;
 		for (u64 i = 0; i < mRecverOT.size(); i++)
 		{
-			mRecverOT[i].setSilentBaseOts(recvOts.subspan(0, mRecverOT[i].silentBaseOtCount()));
-			recvOts = recvOts.subspan(mRecverOT[i].silentBaseOtCount());
+			auto n = mRecverOT[i].baseCount().mBaseOtCount;
+			oc::BitVector c(n);
+			for (u64 j = 0; j < n; ++j) c[j] = choices[choiceOffset + j];
+			choiceOffset += n;
+			mRecverOT[i].setBaseCors(recvOts.subspan(0, n), c, {}, {});
+			recvOts = recvOts.subspan(n);
 		}
 
 		mHasBase = true;
