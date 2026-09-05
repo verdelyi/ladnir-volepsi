@@ -454,6 +454,8 @@ void perfCPSI(oc::CLP& cmd)
 {
 #ifdef VOLE_PSI_ENABLE_CPSI
 	auto n = 1ull << cmd.getOr("nn", 10);
+	auto ns = 1ull << cmd.getOr("ns", cmd.getOr("nn", 10));   // sender (Alice) set size
+	auto nr = 1ull << cmd.getOr("nr", cmd.getOr("nn", 10));   // receiver (Bob) set size
 	auto t = cmd.getOr("t", 1ull);
 	//auto mal = cmd.isSet("mal");
 	auto v = cmd.isSet("v");
@@ -466,14 +468,18 @@ void perfCPSI(oc::CLP& cmd)
 	RsCpsiReceiver::Sharing rs;
 	RsCpsiSender::Sharing ss;
 
-	recv.init(n, n, 0, 40, ZeroBlock, nt);
-	send.init(n, n, 0, 40, ZeroBlock, nt);
+	recv.init(ns, nr, 0, 40, ZeroBlock, nt);
+	send.init(ns, nr, 0, 40, ZeroBlock, nt);
 
 
-	std::vector<block> recvSet(n), sendSet(n);
+	std::vector<block> recvSet(nr), sendSet(ns);
 	PRNG prng(ZeroBlock);
 	prng.get<block>(recvSet);
 	prng.get<block>(sendSet);
+	// plant an intersection of nr/4 elements so PSI-CA can be checked
+	u64 expected = nr / 4;
+	for (u64 i = 0; i < expected; ++i) sendSet[i * 3 % ns] = recvSet[i];
+	(void)n;
 	Timer timer, s, r;
 
 	recv.setTimer(r);
@@ -498,9 +504,15 @@ void perfCPSI(oc::CLP& cmd)
 	{
 
 		std::cout << timer << "\ns\n" << s << "\nr" << r << std::endl;
-		std::cout << "comm " << socket[0].bytesSent() << " + " << socket[1].bytesSent()
+		std::cout << "comm sender->recv " << socket[0].bytesSent() << " + recv->sender " << socket[1].bytesSent()
 			<< " = " << (socket[0].bytesSent() + socket[1].bytesSent())
 			<< std::endl;
+	}
+	{
+		u64 rows = rs.mFlagBits.size(), ca = 0;
+		for (u64 j = 0; j < rows; ++j) ca += (rs.mFlagBits[j] ^ ss.mFlagBits[j]);
+		std::cout << "ns=" << ns << " nr=" << nr << " rows=" << rows
+			<< " psi-ca=" << ca << " expected=" << expected << (ca == expected ? "  OK" : "  MISMATCH") << std::endl;
 
 	}
 #else
