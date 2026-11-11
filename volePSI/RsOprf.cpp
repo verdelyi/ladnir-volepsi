@@ -1,4 +1,5 @@
 #include "RsOprf.h"
+#include <exception>
 
 namespace volePSI
 {
@@ -15,6 +16,7 @@ namespace volePSI
 		auto fu = macoro::eager_task<void>{};
 		auto recvIdx = u64{ 0 };
 		auto fork = Socket{};
+		auto eptr = std::exception_ptr{};
 
 		setTimePoint("RsOprfSender::send-begin");
 		ws = prng.get();
@@ -41,7 +43,19 @@ namespace volePSI
 		fu = genVole(prng, fork, reducedRounds)
 			| macoro::make_eager();
 
-		co_await(chl.recv(mPaxos.mSeed));
+		// fu already runs on a fork of chl and can be suspended in a receive. If the receive
+		// below throws (e.g. the peer went away), fu must still finish before this frame, which
+		// owns it, is destroyed: otherwise the socket later resumes the freed coroutine (SIGSEGV
+		// in the socket's receive path). Closing chl ends fu's pending operations.
+		eptr = nullptr;
+		try { co_await(chl.recv(mPaxos.mSeed)); }
+		catch (...) { eptr = std::current_exception(); }
+		if (eptr)
+		{
+			try { co_await(chl.close()); } catch (...) {}
+			try { co_await(fu); } catch (...) {}
+			std::rethrow_exception(eptr);
+		}
 		setTimePoint("RsOprfSender::recv-seed");
 		co_await(fu);
 		mB = mVoleSender.mB;
@@ -281,6 +295,7 @@ namespace volePSI
 		auto fu = macoro::eager_task<void>{};
 		auto ii = u64{ 0 };
 		auto fork = Socket{};
+		auto eptr = std::exception_ptr{};
 
 		setTimePoint("RsOprfReceiver::receive-begin");
 
@@ -308,21 +323,34 @@ namespace volePSI
 
 
 
-		hPtr.reset(new block[values.size()]);
-		h = span<block>(hPtr.get(), values.size());
+		// As in RsOprfSender::send: fu runs on a fork of chl, so it must finish before this frame is
+		// destroyed even if the local work below throws (allocation, or Baxos overflow in solve).
+		eptr = nullptr;
+		try
+		{
+			hPtr.reset(new block[values.size()]);
+			h = span<block>(hPtr.get(), values.size());
 
-		oc::mAesFixedKey.hashBlocks(values, h);
-		setTimePoint("RsOprfReceiver::receive-hash");
+			oc::mAesFixedKey.hashBlocks(values, h);
+			setTimePoint("RsOprfReceiver::receive-hash");
 
-		//auto pPtr = std::make_shared<std::vector<block>>(paxos.size());
-		//span<block> p = *pPtr;
+			//auto pPtr = std::make_shared<std::vector<block>>(paxos.size());
+			//span<block> p = *pPtr;
 
-		p.resize(paxos.size());
+			p.resize(paxos.size());
 
-		setTimePoint("RsOprfReceiver::receive-alloc");
+			setTimePoint("RsOprfReceiver::receive-alloc");
 
-		paxos.solve<block>(values, h, p, nullptr, numThreads);
-		setTimePoint("RsOprfReceiver::receive-solve");
+			paxos.solve<block>(values, h, p, nullptr, numThreads);
+			setTimePoint("RsOprfReceiver::receive-solve");
+		}
+		catch (...) { eptr = std::current_exception(); }
+		if (eptr)
+		{
+			try { co_await(chl.close()); } catch (...) {}
+			try { co_await(fu); } catch (...) {}
+			std::rethrow_exception(eptr);
+		}
 		co_await(fu);
 
 		// a + b  = c * d
